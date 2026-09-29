@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Python + Browser Hand Tracker</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+    <style>
+        body { font-family: sans-serif; background: #121212; color: white; display: flex; flex-direction: column; align-items: center; }
+        .video-container { position: relative; margin-top: 20px; }
+        video { border-radius: 8px; background: black; }
+        canvas { position: absolute; left: 0; top: 0; z-index: 10; pointer-events: none; }
+        .instructions { margin-top: 15px; background: #222; padding: 10px 20px; border-radius: 5px; text-align: center; }
+    </style>
+</head>
+<body>
+
+    <h2>Local Python Hand Tracking</h2>
+    
+    <div class="video-container">
+        <video id="webcam" autoplay playsinline width="640" height="480"></video>
+        <canvas id="overlay" width="640" height="480"></canvas>
+    </div>
+
+    <div class="instructions">
+        <p>📷 Allow camera access to start.</p>
+        <p>💾 <b>Press Spacebar</b> to save coordinates to a .txt file.</p>
+    </div>
+
+    <script>
+        const socket = io('http://127.0.0.1:5000');
+        const video = document.getElementById('webcam');
+        const canvas = document.getElementById('overlay');
+        const ctx = canvas.getContext('2d');
+        
+        const hiddenCanvas = document.createElement('canvas');
+        hiddenCanvas.width = 640;
+        hiddenCanvas.height = 480;
+        const hiddenCtx = hiddenCanvas.getContext('2d');
+
+        let lastHandData = "[]";
+        let isProcessing = false;
+
+        const HAND_CONNECTIONS = [
+            [0,1], [1,2], [2,3], [3,4], [0,5], [5,6], [6,7], [7,8], 
+            [5,9], [9,10], [10,11], [11,12], [9,13], [13,14], [14,15], [15,16], 
+            [13,17], [17,18], [18,19], [19,20], [0,17]
+        ];
+
+        navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 } })
+            .then(stream => {
+                video.srcObject = stream;
+                video.addEventListener('play', () => {
+                    sendFrameToPython();
+                });
+            })
+            .catch(err => console.error("Camera error:", err));
+
+        function sendFrameToPython() {
+            if (isProcessing) return;
+            isProcessing = true;
+
+            hiddenCtx.drawImage(video, 0, 0, 640, 480);
+            const imageData = hiddenCanvas.toDataURL('image/jpeg', 0.5); 
+            
+            socket.emit('process_frame', imageData);
+        }
+
+        socket.on('frame_results', function(json_str) {
+            lastHandData = json_str;
+            const hands = JSON.parse(json_str);
+            
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            hands.forEach(hand => {
+                const points = hand.map(pt => ({ x: pt.x * canvas.width, y: pt.y * canvas.height }));
+                
+                // 1. Draw Red Skeleton Lines
+                ctx.strokeStyle = "#FF0000";
+                ctx.lineWidth = 2;
+                HAND_CONNECTIONS.forEach(conn => {
+                    ctx.beginPath();
+                    ctx.moveTo(points[conn[0]].x, points[conn[0]].y);
+                    ctx.lineTo(points[conn[1]].x, points[conn[1]].y);
+                    ctx.stroke();
+                });
+
+                // 2. Draw Green Dots on all 21 Keypoints
+                ctx.fillStyle = "#00FF00";
+                points.forEach(pt => {
+                    ctx.beginPath();
+                    ctx.arc(pt.x, pt.y, 4, 0, 2 * Math.PI); // Radius of 4px
+                    ctx.fill();
+                });
+
+                // 3. Draw Blue Bounding Box
+                let xMin = canvas.width, yMin = canvas.height, xMax = 0, yMax = 0;
+                points.forEach(pt => {
+                    if (pt.x < xMin) xMin = pt.x;
+                    if (pt.x > xMax) xMax = pt.x;
+                    if (pt.y < yMin) yMin = pt.y;
+                    if (pt.y > yMax) yMax = pt.y;
+                });
+
+                const pad = 20;
+                ctx.strokeStyle = "#0000FF";
+                ctx.strokeRect(xMin - pad, yMin - pad, (xMax - xMin) + pad*2, (yMax - yMin) + pad*2);
+            });
+
+            isProcessing = false;
+            requestAnimationFrame(sendFrameToPython);
+        });
+
+        document.addEventListener('keydown', (e) => {
+            if (e.code === 'Space') {
+                e.preventDefault();
+                socket.emit('save_data', { coords: lastHandData });
+            }
+        });
+    </script>
+</body>
+</html>
